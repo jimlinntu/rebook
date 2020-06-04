@@ -32,13 +32,17 @@ def compress(l, flags):
 
 def arc_length_points(xs, ys, n_points):
     arc_points = np.stack((xs, ys))
+    # ds = sqrt(dx^2 + dy^2) use finite difference to evaluate ds between (xi, zi) and (x(i+1), z(i+1))
     arc_lengths = norm(np.diff(arc_points, axis=1), axis=0)
+    # compute the integral from 0 over ds
     cumulative_arc = np.hstack([[0], np.cumsum(arc_lengths)])
+    # f(x) = u = integral from 0 to x over ds = the arc length
     D = interpolate.interp1d(cumulative_arc, arc_points, assume_sorted=True)
 
     total_arc = cumulative_arc[-1]
     if lib.debug: print('total D arc length:', total_arc)
     s_domain = np.linspace(0, total_arc, n_points)
+    # D(s_domain) will produce an array of (x, z) with equal width of (xi, zi) and (x(i+1), z(i+1)) for all i
     return D(s_domain), total_arc
 
 # x = my + b model weighted t
@@ -152,6 +156,7 @@ def correct_geometry(orig, mesh, interpolation=cv2.INTER_LINEAR):
     # coordinates (u, v) on mesh -> mesh[u][v] = (x, y) in distorted image
     mesh32 = mesh.astype(np.float32)
     xmesh, ymesh = mesh32[:, :, 0], mesh32[:, :, 1]
+    # convert floats to integers
     conv_xmesh, conv_ymesh = cv2.convertMaps(xmesh, ymesh, cv2.CV_16SC2)
     out = cv2.remap(orig, conv_xmesh, conv_ymesh, interpolation=interpolation,
                     borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
@@ -220,6 +225,9 @@ def image_to_focal_plane(points, O):
 
 # points: 3 x ... array of points
 def project_to_image(points, O):
+    # For a point in 3d (x,y,z) --> pass through camera optical center ---> project to the image z = -f
+    # k(x,y,z) = (?, ?, -f)
+    # => k = -f/z == FOCAL_PLANE_Z / points[2]
     assert points.shape[0] == 3
     projected = (points * FOCAL_PLANE_Z / points[2])[0:2]
     return (projected.T + O).T
@@ -813,6 +821,7 @@ def make_E_align(pages, AH, O):
     return sum(losses, NullLoss())
 
 def make_mesh_XYZ(xs, ys, g):
+    # make an 3D mesh
     return np.array([
         np.tile(xs, [len(ys), 1]),
         np.tile(ys, [len(xs), 1]).T,
@@ -894,33 +903,42 @@ def make_mesh_2d_indiv(all_lines, corners_XYZ, O, R, g, n_points_w=None):
     box_XYZ = Crop.from_points(corners_XYZ[:2]).expand(0.01)
     if lib.debug: print('box_XYZ:', box_XYZ)
 
+    # n_points_w == how many discrete points for width
     if n_points_w is None:
         # 90th percentile line width a good guess
         n_points_w = 1.2 * np.percentile(np.array([line.width() for line in all_lines]), 90)
         n_points_w = max(n_points_w, 1800)
     mesh_XYZ_x = np.linspace(box_XYZ.x0, box_XYZ.x1, 400)
     mesh_XYZ_z = g(mesh_XYZ_x)
+    # total_arc will be the true page width (computed from integration)
     mesh_XYZ_xz_arc, total_arc = arc_length_points(mesh_XYZ_x, mesh_XYZ_z,
                                                    int(n_points_w))
+    # we actually only need x, because z can be easily computed from g (i.e. g(x) = z)
     mesh_XYZ_x_arc, _ = mesh_XYZ_xz_arc
 
     # TODO: think more about estimation of aspect ratio for mesh
+    # compute the discrete points for height (show follow the aspect ratio (i.e. box_XYZ.h / total_arc)
     n_points_h = int(n_points_w * box_XYZ.h / total_arc)
     # n_points_h = n_points_w * 1.7
 
     mesh_XYZ_y = np.linspace(box_XYZ.y0, box_XYZ.y1, n_points_h)
     mesh_XYZ = make_mesh_XYZ(mesh_XYZ_x_arc, mesh_XYZ_y, g)
+    # mesh_2d[:, i, j] == a coordinate (x, y) on the original image
     mesh_2d = gcs_to_image(mesh_XYZ, O, R)
     if lib.debug: print('mesh:', Crop.from_points(mesh_2d))
 
     # make sure meshes are not reversed
+    # (Note: I think the upside down issue is caused by rotation)
+    # fix left-right reversed (I think it will happen why rotation axis is (0, 1, 0) and rotation degree is pi)
+    # by making sure the first x coordinate is bigger than
     if mesh_2d[0, :, 0].mean() > mesh_2d[0, :, -1].mean():
         mesh_2d = mesh_2d[:, :, ::-1]
 
+    # fix upside down
     if mesh_2d[1, 0].mean() > mesh_2d[1, -1].mean():
         mesh_2d = mesh_2d[:, ::-1, :]
 
-    return mesh_2d.transpose(1, 2, 0)
+    return mesh_2d.transpose(1, 2, 0) # height, width, 2(x,y)
 
 def lm(fun, x0, jac, args=(), kwargs={}, ftol=1e-6, max_nfev=10000, x_scale=None,
        geodesic_accel=False, uphill_steps=False):

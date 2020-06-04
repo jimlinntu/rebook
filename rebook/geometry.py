@@ -222,7 +222,7 @@ class Crop(object):
     def apply(self, im):
         assert self.nonempty()
         crop = self.intersect(Crop.full(im))
-        return im[crop.y0:crop.y1, crop.x0:crop.x1]
+        return im[int(crop.y0):int(crop.y1), int(crop.x0):int(crop.x1)]
 
     @staticmethod
     def full(im):
