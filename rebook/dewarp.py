@@ -22,6 +22,8 @@ from geometry import Crop
 import lib
 from lib import RED, GREEN, BLUE, draw_circle, draw_line
 import newton
+from pathlib import Path
+import re
 
 # focal length f = 3270.5 pixels
 f = 3270.5
@@ -81,7 +83,7 @@ def estimate_vanishing(AH, lines):
 
 class PolyModel5(object):
     def estimate(self, data):
-        self.params = Poly.fit(data[:, 0], data[:, 1], 5, domain=[-1, 1])
+        self.params = Poly.fit(data[:, 0], data[:, 1], 1, domain=[-1, 1])
         return True
 
     def residuals(self, data):
@@ -105,11 +107,16 @@ def merge_lines(AH, lines):
         x_max = min(line.right(), last.right())
         overlap = x_max - x_min
         integ = (last.model - line.model).integ()
+        # I think abs(integ(x_max) - integ(x_min)) <= the difference of the areas between two polynomial lines
+        # But most of the time, one line will be total greater than other line for every x . when a newline begin)
+        # Ex. if two lines are almost equal, this value will be small
+        # Ex. However, if two lines are different, this value might be high
         if (overlap > .8 * line.width() or overlap > .8 * last.width()) \
                 and abs(integ(x_max) - integ(x_min)) / overlap < AH / 8.0:
             out_lines[-1].merge(line)
             points = np.array([letter.base_point() for letter in out_lines[-1]])
-            new_model, inliers = ransac(points, PolyModel5, 10, AH / 15.0)
+            # find a new polynomial to represent this dicrete line
+            new_model, inliers = ransac(points, PolyModel5, min(3, len(points)-2), AH / 15.0)
             out_lines[-1].compress(inliers)
             out_lines[-1].model = new_model.params
         else:
@@ -119,7 +126,6 @@ def merge_lines(AH, lines):
     # for l in out_lines:
     #     trace_baseline(debug, l, BLUE)
     # lib.debug_imwrite('merged.png', debug)
-
     if lib.debug: print('original lines:', len(lines), 'merged lines:', len(out_lines))
     return out_lines
 
@@ -129,11 +135,11 @@ def remove_outliers(im, AH, lines):
 
     result = []
     for l in lines:
-        if len(l) < 5: continue
+        if len(l) < 2: continue
 
         points = np.array([letter.base_point() for letter in l])
         min_samples = points.shape[0]//2+1
-        model, inliers = ransac(data=points, model_class=PolyModel5, min_samples=min_samples, residual_threshold=AH / 10.0)
+        model, inliers = ransac(data=points, model_class=PolyModel5, min_samples=min(min_samples, len(points)-1), residual_threshold=AH / 10.0)
         poly = model.params
         l.model = poly
         # trace_baseline(debug, l, BLUE)
@@ -141,15 +147,16 @@ def remove_outliers(im, AH, lines):
             color = GREEN if is_in else RED
             draw_circle(debug, p, 4, color=color)
 
+        # remove outliners by an inliers mask
         l.compress(inliers)
         result.append(l)
 
+    result = merge_lines(AH, result)
     for l in result:
         draw_circle(debug, l.original_letters[0].left_mid(), 6, BLUE, -1)
         draw_circle(debug, l.original_letters[-1].right_mid(), 6, BLUE, -1)
-
     lib.debug_imwrite('lines.png', debug)
-    return merge_lines(AH, result)
+    return result
 
 # @lib.timeit
 def correct_geometry(orig, mesh, interpolation=cv2.INTER_LINEAR):
@@ -195,7 +202,10 @@ def get_AH_lines(im):
 def R_theta(theta):
     # these are all N-vectors
     T = norm(theta, axis=0)
-    t1, t2, t3 = theta / T
+    if T != 0:
+        t1, t2, t3 = theta / T
+    else:
+        t1, t2, t3 = 1, 0, 0 # random choose a axis because the rotation degree is zero! so there is no effect on the rotation matrix
     c, s = np.cos(T / 2), np.sin(T / 2)
     ss = s * s
     cs = c * s
@@ -301,7 +311,7 @@ class SplitPoly(object):
 def split_lengths(array, lengths):
     return np.split(array, np.cumsum(lengths))
 
-DEGREE = 13
+DEGREE = 2
 OMEGA = 1e-1
 def unpack_args(args, n_pages):
     # theta: 3; a_m: DEGREE; align: 2; l_m: len(lines)
@@ -1009,7 +1019,7 @@ def lsq(func, jac, x_scale):
 
     return result
 
-def kim2014(orig, O=None, split=True, n_points_w=None):
+def kim2014(orig, O=None, split=False, n_points_w=None):
     lib.debug_imwrite('gray.png', binarize.grayscale(orig))
     im = binarize.binarize(orig, algorithm=lambda im: binarize.sauvola_noisy(im, k=0.1))
     global bw
@@ -1128,6 +1138,7 @@ class Kim2014(object):
         # print('theta_0 dot v:', theta_0.dot(vanishing))
         # theta_0 = np.array([0.1, 0, 0], dtype=np.float64)
         theta_0 = (np.random.rand(3) - 0.5) / 4
+        # theta_0 = np.zeros((3,), dtype=np.float64)
 
         # flat surface as initial guess.
         # NB: coeff 0 forced to 0 here. not included in opt.
@@ -1154,7 +1165,7 @@ class Kim2014(object):
         final_norm, opt_result = self.optimize()
         return self.correct(opt_result)
 
-    def run_retry(self, n_tries=6):
+    def run_retry(self, n_tries=30):
         best_result = None
         best_norm = np.inf
         for _ in range(n_tries):
@@ -1274,7 +1285,9 @@ class Kim2014(object):
         return result
 
 def go(argv):
-    im = cv2.imread(argv[1], cv2.IMREAD_UNCHANGED)
+    img_path = Path(argv[1])
+    base_name = re.sub("\.(jpg|png)$", "", img_path.name) # replace the suffix
+    im = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
     lib.debug = True
     lib.debug_prefix = ['dewarp']
     np.set_printoptions(linewidth=130, precision=4)
@@ -1284,7 +1297,7 @@ def go(argv):
         # gray -= np.percentile(gray, 2)
         # gray *= 255 / np.percentile(gray, 95)
         # norm = binarize.ng2014_normalize(lib.clip_u8(gray))
-        cv2.imwrite('dewarped{}.png'.format(i), outimg)
+        cv2.imwrite(str(img_path.parent / (base_name + '_dewarped{}.png'.format(i))), outimg)
 
 if __name__ == '__main__':
     go(sys.argv)
