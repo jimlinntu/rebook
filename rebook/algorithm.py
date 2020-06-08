@@ -462,6 +462,9 @@ def masked_mean_std(data, mask):
     return mean, std
 
 def remove_stroke_outliers(im, lines, k=1.0):
+    '''
+        Remove letters with width smaller than mean of global stroke widths - k * std of global stroke widths
+    '''
     stroke_widths = fast_stroke_width(im)
     if lib.debug:
         lib.debug_imwrite('strokes.png', lib.normalize_u8(stroke_widths.clip(0, 10)))
@@ -469,13 +472,16 @@ def remove_stroke_outliers(im, lines, k=1.0):
     mask = np.zeros(im.shape, dtype=np.uint8)
     for line in lines:
         for letter in line:
+            # letter.crop() == a crop object recording (x, y, w, h)
+            # Note: sliced is a memory pointer to mask, so adding a raster array into `sliced` will affect `mask`
             sliced = letter.crop().apply(mask)
             sliced |= letter.raster()
 
     lib.debug_imwrite('letter_mask.png', -mask)
 
     masked_strokes = stroke_widths.copy()
-    masked_strokes &= -mask
+    # only leave pixels occupied by letters
+    masked_strokes &= -mask # -mask (0 -> 0, 1 -> 255)
 
     strokes_mean, strokes_std = masked_mean_std(masked_strokes, mask)
     if lib.debug:
@@ -492,6 +498,7 @@ def remove_stroke_outliers(im, lines, k=1.0):
 
             raster = letter.raster()
             sliced_strokes = crop.apply(stroke_widths).copy()
+            # True -> 1, False -> 0 ==> 1 -> 255, 0 -> 0
             sliced_strokes &= lib.bool_to_u8(raster)
 
             mean, std = masked_mean_std(sliced_strokes, raster)
