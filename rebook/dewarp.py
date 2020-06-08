@@ -173,10 +173,12 @@ def correct_geometry(orig, mesh, interpolation=cv2.INTER_LINEAR):
 
 def get_AH_lines(im):
     all_letters = algorithm.all_letters(im)
+    # AH == average character height
     AH = algorithm.dominant_char_height(im, letters=all_letters)
     if lib.debug: print('AH =', AH)
     letters = algorithm.filter_size(AH, im, letters=all_letters)
     all_lines = collate.collate_lines(AH, letters)
+    # From up to down
     all_lines.sort(key=lambda l: l[0].y)
 
     combined = algorithm.combine_underlined(AH, im, all_lines, all_letters)

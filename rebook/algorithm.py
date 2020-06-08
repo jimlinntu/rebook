@@ -68,7 +68,7 @@ def all_letters(im):
     max_label, labels, stats, centroids = \
         cv2.connectedComponentsWithStats(im ^ 255, connectivity=4)
     return [Letter(label, labels, stats[label], centroids[label]) \
-            for label in range(1, max_label)]
+            for label in range(1, max_label)] # 0 is background
 
 def dominant_char_height(im, letters=None):
     if letters is None:
@@ -126,10 +126,13 @@ def horizontal_lines(AH, im, components=None):
     result = []
     for component in components:
         if component.w > AH * 20:
+            # Generate a mask represent this connected components
             mask = component.raster()
-            proj = mask.sum(axis=0)
-            smooth = (proj[:-2] + proj[1:-1] + proj[2:]) / 3.0
+            proj = mask.sum(axis=0) # sum over y axis
+            smooth = (proj[:-2] + proj[1:-1] + proj[2:]) / 3.0 # simple smoothing by averaging
             max_height_var = np.percentile(smooth, 98) - np.percentile(smooth, 2)
+            # if the widest over y axis of this mask is small enough and the height variacne is not too hight 
+            # we will consider this connected component it as a horizontal line
             if np.percentile(smooth, 98) <= AH / 3.0 and max_height_var <= AH / 6.0:
                 result.append(component)
 
@@ -137,23 +140,52 @@ def horizontal_lines(AH, im, components=None):
 
 def combine_underlined(AH, im, lines, components):
     lines_set = set(lines)
+    # detect long horizontal lines
     underlines = horizontal_lines(AH, im, components)
+    # Idea: because a "line" might be broken into several parts, we will want to combine them together
+    #       for each underline(a connected component),
+    #       if there is any line fall into the range of [underline.x, underline.right()] and their y is very close
+    #       we can combine them together
     for underline in underlines:
+        assert isinstance(underline, Letter)
         raster = underline.raster()
-        bottom = underline.y + underline.h - 1 - raster[::-1].argmax(axis=0)
+        # turn raster upside down (raster[::-1]) and then take the first True value's index
+        # i.e. so raster[::-1].argmax(0) == (the distance from bottom to the first horizontal True value) == D
+        '''
+           Ex. 0 1 2 3 4
+            0  T T T T T
+            1  F F T T F
+            2  F F T F F   ^
+            3  F F F F F   |
+            4  F F F F F   | D == 4 (for column 2)
+            5  F F F F F   |
+            6  F F F F F   V
+
+           In this case:
+                raster[::-1].argmax(axis=0) == [6, 6, 4, 5, 6] == the distance from the bottom to the first True
+                bottom == [0, 0, 2, 1, 0]
+        '''
+        bottom = (underline.y + underline.h - 1) - (raster[::-1].argmax(axis=0))
         close_lines = []
         for line in lines:
+            # get base_points of all letters
             base_points = line.base_points().astype(int)
+            # slice only points whose x value is >= than underline.x and smaller than underline's rightmost x
             base_points = base_points[(base_points[:, 0] >= underline.x) \
                                       & (base_points[:, 0] < underline.right())]
             if len(base_points) == 0: continue
 
             base_ys = base_points[:, 1]
+            # base_points[:, 0] - underline.x == the indices when we set the origin on the top left of the underline
+            # bottom[<indices>] == will access each underline_y corresponding to base_points x coordinates
             underline_ys = bottom[base_points[:, 0] - underline.x]
+            # if for each base point, its y coordinates are not too far from this underline
+            # we consider this line is broken and therefore add them together
             if np.all(np.abs(base_ys - underline_ys) < AH):
                 line.underlines.append(underline)
                 close_lines.append(line)
 
+        # if len(close_lines) > 1, we will combine these lines together
         if len(close_lines) > 1:
             # print('merging some underlined lines!')
             combined = close_lines[0]
