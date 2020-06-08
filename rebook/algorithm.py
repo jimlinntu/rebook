@@ -343,17 +343,51 @@ def fast_stroke_width(im):
     # im should be black-on-white. max stroke width 41.
     assert im.dtype == np.uint8 and is_bw(im)
 
-    inv = im + 1
-    inv_mask = im ^ 255
+    inv = im + 1 # 0(black: text) -> 1, 255(white) -> 0
+    inv_mask = im ^ 255 # 0 -> 255, 255 -> 0
+    # dists[y][x] == the distance to the closest zero(background color)
     dists = cv2.distanceTransform(inv, cv2.DIST_L2, 5)
     stroke_radius = min(20, int(math.ceil(np.percentile(dists, 95))))
-    dists = 2 * dists + 1
+    # 0 -> 1, 1 -> 3, 2 -> 5
+    dists = 2 * dists + 1 # I actually do not know why bother multiply dists by 2? You can just add 1 to achieve the same goal
     dists = dists.astype(np.uint8)
     rect = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    # Propagate the stroke information multiple times, in order to make large stroke region with the same value
+    '''
+        Ex.
+        dists = 
+            0 0 0 0 0 0 0
+            0 1 1 1 1 1 0 
+            0 1 2 2 2 1 0
+            0 1 2 3 2 1 0
+            0 1 2 2 2 1 0
+            0 1 1 1 1 1 0
+            0 0 0 0 0 0 0
+        dists = 2 * dists + 1
+            1 1 1 1 1 1 1
+            1 3 3 3 3 3 1 
+            1 3 5 5 5 3 1
+            1 3 5 7 5 3 1
+            1 3 5 5 5 3 1
+            1 3 3 3 3 3 1
+            1 1 1 1 1 1 1
+
+        if stroke_radius == 3, then dists will become:
+            1 1 1 1 1 1 1
+            1 7 7 7 7 7 1 
+            1 7 7 7 7 7 1
+            1 7 7 7 7 7 1
+            1 7 7 7 7 7 1
+            1 7 7 7 7 7 1
+            1 1 1 1 1 1 1
+    '''
     for idx in range(stroke_radius):
         dists = cv2.dilate(dists, rect)
-        dists &= inv_mask
+        dists &= inv_mask # leave only text parts(255)
 
+    # if a pixel's stroke width is too large, we mask out this pixel
+    # (i.e. True -> 1, False -> 0 ==> 1 -> 0, 0 -> 255)
+    # I think 41 is becaue the author set stroke_radius == 20 (i.e. 20 * 2 + 1 == 41)
     dists_mask = (dists >= 41).astype(np.uint8) - 1
     dists &= dists_mask
 
