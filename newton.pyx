@@ -25,7 +25,8 @@ cdef double poly_eval_verbose(np.ndarray[np.float64_t, ndim=1] coef, double x):
 cdef double poly_eval(np.ndarray[np.float64_t, ndim=1] coef, double x):
     cdef double y = 0
     cdef int k, m = coef.shape[0] - 1
-    for k in range(m, -1, -1):
+    # Horner's rule
+    for k in range(m, -1, -1): # k \in [n-1, 0]
         y = fma(y, x, coef[k])  # y * x + a_k
 
     return y
@@ -66,10 +67,13 @@ cdef double find_t(np.ndarray[np.float64_t, ndim=1] h_coef,
         t = t0
         for j in range(30):
             u = w * (Rp_x * t - ROf_x - T)
+            # y = s(u)
             y = poly_eval(h_coef, u) / w - fma(Rp_z, t, -ROf_z)
-            if fabs(y) < 1e-6:
+            if fabs(y) < 1e-6: # if s(u) is close to zero, we are done
                 # print j
                 break
+            # otherwise, we compute y / y' and perform  t <- t - y / y'
+            # Note: s(t) / s'(t) = s(u) / s'(u)
             yp = fma(poly_eval(hp_coef, u), Rp_x, -Rp_z)
             t -= y / yp
 
@@ -77,6 +81,7 @@ cdef double find_t(np.ndarray[np.float64_t, ndim=1] h_coef,
         y_minus = poly_eval(h_coef, u_minus) / w - fma(Rp_z, t * 0.99, -ROf_z)
         u_plus = w * (Rp_x * t * 0.01 - ROf_x - T)
         y_plus = poly_eval(h_coef, u_plus) / w - fma(Rp_z, t * 0.01, -ROf_z)
+        # s(u-) * s(u+) > 0 and y is close enough to zero, we can stop here
         if y_minus * y_plus > 0 and fabs(y) < 1e-6:  # same sign, not obv an intermediate root
             done = True
         else:
@@ -84,17 +89,22 @@ cdef double find_t(np.ndarray[np.float64_t, ndim=1] h_coef,
 
     if not done:
         # print 'checking all roots...'
+        # s_coef == s(u) = h(u) / w - (Rp_z / Rp_x * (u / w + ROf_x + T) - ROf_z)
         s_coef = h_coef / w
         s_coef[1] -= Rp_z / Rp_x / w
         s_coef[0] += ROf_z - Rp_z / Rp_x * (ROf_x + T)
 
         s_poly = Poly(s_coef)
-        roots_u = s_poly.roots()
+        roots_u = s_poly.roots() # diretly solve s(u)
+        # the author just us the roots whose imagination part is small enough as the solution
         roots_t = (roots_u[abs(roots_u.imag) < 1e-7].real / w + ROf_x + T) / Rp_x
+        # Cuz our document plane is on the right side (t < 0), so the author remove t > 0 cases
         roots_t_neg = roots_t[roots_t < 0]
         if roots_t_neg.shape[0] > 0:
             t = -INFINITY
             for j in range(roots_t_neg.shape[0]):
+                # choose the largest t over negative ts
+                # (it makes sense, because you want your document be closer to the document
                 if roots_t_neg[j] > t:
                     t = roots_t_neg[j]
 
@@ -109,6 +119,7 @@ cdef double find_t(np.ndarray[np.float64_t, ndim=1] h_coef,
 
     t_out = t
 
+    # if the t_out is still not finite, we will use t \in [-2.0, 0] to perform Newton method again
     if not isfinite(t_out):
         # print 'escape hatch'
         best_t = -INFINITY
@@ -122,6 +133,8 @@ cdef double find_t(np.ndarray[np.float64_t, ndim=1] h_coef,
                 t -= y / yp
 
             # print('{: .4f} {: .4f} {: .8f}'.format(t0, t, y))
+            # if best_t > 0 and t < 0, we directly choose t < 0 because t > 0 must be wrong
+            # if |t| < |best_t| + 1e-5(do know why bother to add 1e-5)
             if (best_t > 0 and t < 0) or fabs(t) < fabs(best_t) + 1e-5:
                 best_t = t
 
