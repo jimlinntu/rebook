@@ -160,9 +160,9 @@ def t_i_k(np.ndarray[np.float64_t, ndim=2] R,
     cdef double t, y, u, t0, big_ys_sum, tl, tr, yl = INFINITY, yr = INFINITY
     cdef double w, T
 
-    cdef int dual = g.split()
+    cdef int dual = g.split() # if the polynomial can be split
 
-    rays = R.dot(points)
+    rays = R.dot(points) # R dot p
 
     Of = np.array([0, 0, f], dtype=np.float64)
     ROf = R.dot(Of)
@@ -189,6 +189,7 @@ def t_i_k(np.ndarray[np.float64_t, ndim=2] R,
     # defer interior scaling until computation
     hl_coef = gl.h.coef.copy()
     hl_coef[0] = 0
+    # h_left prime == hl'()
     hlp_coef = deriv(hl_coef)
 
     if np.all(hl_coef == 0.) and (not dual or np.all(hr_coef == 0.)):
@@ -202,8 +203,9 @@ def t_i_k(np.ndarray[np.float64_t, ndim=2] R,
         Rp_x = rays[0, i]
         Rp_z = rays[2, i]
 
-        t0 = t0s[i]
+        t0 = t0s[i] # initial t for Newton method
         if not dual:
+            # solve: [X, Y, Z] = R p t - R Of in the paper
             t = find_t(hl_coef, hlp_coef, w, T, ROf_x, ROf_z, Rp_x, Rp_z, t0)
         elif False:  # isfinite(t0) and Rp_x * t0 - ROf_x < T - 1:
             tl = find_t(hl_coef, hlp_coef, w, T, ROf_x, ROf_z, Rp_x, Rp_z, t0)
@@ -222,21 +224,46 @@ def t_i_k(np.ndarray[np.float64_t, ndim=2] R,
         else:
             tl = find_t(hl_coef, hlp_coef, w, T, ROf_x, ROf_z, Rp_x, Rp_z, t0)
             tr = find_t(hr_coef, hrp_coef, w, T, ROf_x, ROf_z, Rp_x, Rp_z, t0)
+            # if both tl, tr are smaller than zero, we can two solutions to the GCS surface
             if tl < 0 and tr < 0:
                 xl = Rp_x * tl - ROf_x
                 xr = Rp_x * tr - ROf_x
                 if xl < T and xr > T:
+                    '''
+                        Because the GCS might be look like this:
+                          h_left     h_right
+                            \         /
+                             \       /
+                              \     /
+                               \   /
+                                \ /
+                         ------------- (below is the part we do not want)
+                                 /\
+                                /  \
+                               /    \
+                              /      \
+
+                        when we solve tl and tr, we might find a solution that is deeper(more negative)
+                        Therefore, when we consider (tl-(-1)) and (tr-(-1)), we are computing the distance of t to -1
+                        as we know, t = -1 should be very likely close to our solution
+                        Thus, fabs(tl + 1) < fabs(tr + 1) says: if tl is closer to -1, then we consider tl,
+                        otherwise we choose tr
+                    '''
                     t = tl if fabs(tl + 1) < fabs(tr + 1) else tr
                 else:
-                    t = tl if xl < T else tr
+                    # if both xl and xr are on the same side, we just choose tl if xl < T
+                    t = tl if xl < T else t
                 # if fabs(y) > 1e-4:
                 #     print '{:1.3f} {:4.0f}; {:1.3f} {:4.0f}'.format(tl, xl, tr, xr)
             else:
+                # if one of tl, tr is < 0, we choose the negative one (because > 0 is obvious false)
                 t = min(tl, tr)
 
         assert isfinite(t)
         ts[i] = t
+        # if T == inf, u == -inf
         u = w * (Rp_x * t - ROf_x - T)
+        # if u == -inf, y = nan (Note: fabs(nan) > 1e-4 is False)
         y = fabs(poly_eval(hl_coef, u) / w - fma(Rp_z, t, -ROf_z))
         if dual:
             yr = fabs(poly_eval(hr_coef, u) / w - fma(Rp_z, t, -ROf_z))
@@ -253,4 +280,5 @@ def t_i_k(np.ndarray[np.float64_t, ndim=2] R,
     if big_ys > 0:
         print 'big ys:', big_ys, 'avg:', big_ys_sum / big_ys
 
+    # ts, ts(N, ) * rays(3, N) - ROf[:, np.newaxis](3, 1)(the point on GCS surface)
     return ts, ts * rays - ROf[:, np.newaxis]
