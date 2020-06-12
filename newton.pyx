@@ -274,7 +274,7 @@ def t_i_k(np.ndarray[np.float64_t, ndim=2] R,
             big_ys += 1
             big_ys_sum += y
 
-        t0s[i] = ts[i]
+        t0s[i] = ts[i] # save current t for later usage
 
     # print 'final ts:', ts
     if big_ys > 0:

@@ -131,6 +131,9 @@ def merge_lines(AH, lines):
 
 # @lib.timeit
 def remove_outliers(im, AH, lines):
+    '''
+        Use RANSAC to find a good polynomial to fit each line and then remove the outliers according to this polynomial
+    '''
     debug = cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
 
     result = []
@@ -230,10 +233,12 @@ def image_to_focal_plane(points, O):
         points = np.array(points)
 
     assert points.shape[0] == 2
+    # turn image coordinates into camera coordinate system
     return np.concatenate((
-        points - O[:, newaxis],
-        np.full(points.shape[1:], FOCAL_PLANE_Z)[newaxis, ...]
+        points - O[:, newaxis], # (2, N points) - (2, 1)
+        np.full(points.shape[1:], FOCAL_PLANE_Z)[newaxis, ...] # (1, N points)
     )).astype(np.float64)
+    # (3, N points): puting 3 in the front of dimensions make it easier to compute R.dot(p)
 
 # points: 3 x ... array of points
 def project_to_image(points, O):
@@ -326,6 +331,7 @@ def unpack_args(args, n_pages):
     aligns = align_all.reshape(n_pages, -1)
 
     if n_pages == 1:
+        # Note: g(x) = 0 + a1 x^1 + a2 x^2 ...
         g = NormPoly(np.concatenate([[0], a_ms[0]]), OMEGA)
     elif n_pages == 2:
         g = SplitPoly(T,
@@ -340,6 +346,7 @@ def E_str_project(R, g, base_points, t0s_idx):
     if len(E_str_t0s) <= t0s_idx:
         E_str_t0s.extend([None] * (t0s_idx - len(E_str_t0s) + 1))
     if E_str_t0s[t0s_idx] is None:
+        # E_str_t0s[t0s_idx][i] == initial ts for i-th line
         E_str_t0s[t0s_idx] = \
             [np.full((points.shape[1],), np.inf) for points in base_points]
 
@@ -418,6 +425,7 @@ class Preproject(Loss):
         if self.last_x is None or self.last_x.shape != args.shape or np.any(args != self.last_x):
             R = R_theta(theta)
             self.last_x = args
+            # self.last_projection[i] = (t s, surface point s) for i-th line
             self.last_projection = E_str_project(R, g, self.base_points, 0)
 
         return self.last_projection
@@ -468,7 +476,7 @@ def line_weights(points):
 
 class E_str(Loss):
     def __init__(self, base_points, n_pages, weight_outer=True, scale_t=False):
-        self.base_points = base_points
+        self.base_points = base_points # base_points[i] = i-th line's points with size (3, N)
         self.all_points = np.concatenate(base_points, axis=1)
         self.all_weights = np.concatenate([line_weights(line) for line in self.base_points])
         self.n_pages = n_pages
@@ -479,13 +487,16 @@ class E_str(Loss):
     # base_points = text base points on focal plane
     @staticmethod
     def unpacked(all_ts_surface, l_m):
-        assert len(all_ts_surface) == l_m.shape[0]
+        assert len(all_ts_surface) == l_m.shape[0] # the number of lines should be equal
 
+        # Ys: (N,), l_k: (N,)
         residuals = [Ys - l_k for (_, (_, Ys, _)), l_k in zip(all_ts_surface, l_m)]
+        # concatenate all points's resiual resulting (total number of points, )
         return np.concatenate(residuals)
 
     def residuals(self, args, all_ts_surface):
         theta, _, _, T, l_m, g = unpack_args(args, self.n_pages)
+        # result: (the number of points in the document, )
         result = E_str.unpacked(all_ts_surface, l_m)
 
         if self.weight_outer:
@@ -493,6 +504,10 @@ class E_str(Loss):
 
         if self.scale_t:
             all_ts = np.concatenate([ts for ts, _ in all_ts_surface])
+            # Basically, it says: if t is more negative
+            # (far away from camera, this residual should be weighted less
+            #  I think the intuition behind it is if a t is very negative, then this point might be
+            #  an outlier, thus this residual should be consider less)
             result /= -all_ts
 
         return result
@@ -1103,15 +1118,18 @@ class Kim2014(object):
         self.n_points_w = n_points_w
 
         for page in self.pages:
+            # page is a list of TextLine
             page.sort(key=lambda l: l[0].y)
 
-        # line points on focal plane
+        # line points on focal plane: self.base_points[i] == (3, N points)
         self.base_points = [line_base_points(line, O) for line in lines]
         # make underlines straight as well
         for line in lines:
             # if line.underlines: print('underlines:', len(line.underlines))
             for underline in line.underlines:
+                assert isinstance(underline, Letter)
                 mid_contour = (underline.top_contour() + underline.bottom_contour()) / 2
+                # (2, underline.w): for each x in [0, underline.w), there is a (x, y)
                 all_mid_points = np.stack([
                     underline.x + np.arange(underline.w), mid_contour,
                 ])
@@ -1150,8 +1168,10 @@ class Kim2014(object):
         _, ROf_y, ROf_z = R_0.dot(Of)
         if lib.debug: print('Rv:', R_0.dot(np.array((vx, vy, -f))))
 
+        # Inital guess: R (p * (-1) - Of) (because t == -1 is a good guess)
         all_surface = [R_0.dot(-points - Of[:, newaxis]) for points in self.base_points]
-        l_m_0 = [Ys.mean() for _, Ys, _ in all_surface]
+        # l_m: each line's mean
+        l_m_0 = [Ys.mean() for _, Ys, _ in all_surface] # use Y's mean value as the initial guesses
 
         align_0 = [-1000, 1000] * len(self.pages)
 
@@ -1229,6 +1249,10 @@ class Kim2014(object):
         n_pages = len(self.pages)
         args_0 = self.initial_args()
 
+        # reformulate the problem into xs = x / x_scale
+        # the larger of x_scale[j], the larger of a trust region
+        # the gradient of loss w.r.t x[i] will be scaled by x_scale
+        # https://github.com/scipy/scipy/blob/adc4f4f7bab120ccfab9383aba272954a0a12fb0/scipy/optimize/_lsq/trf.py#L470
         x_scale = np.concatenate([
             [0.3] * 3,
             np.tile(1000 * ((3e-4 / OMEGA) ** np.arange(DEGREE)), n_pages),
