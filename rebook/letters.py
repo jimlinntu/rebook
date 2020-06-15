@@ -81,13 +81,19 @@ class Letter(object):
         return im[self.y:self.y + self.h, self.x:self.x + self.w]
 
     def raster(self):
+        '''
+            Get a binary map, where True value represent where this component occupy
+        '''
         sliced = self.slice(self.label_map)
+        assert sliced.shape == (self.h, self.w)
         return sliced == self.label
 
     def top_contour(self):
+        # the distance from the top of image to the first True value on the direction of y
         return self.y + self.raster().argmax(axis=0)
 
     def bottom_contour(self):
+        # the distance from the top of image to the last True value on the direction of y
         return self.y + self.h - 1 - self.raster()[::-1].argmax(axis=0)
 
     def box(self, im, color=(0, 0, 255), thickness=2):
