@@ -48,6 +48,8 @@ def arc_length_points(xs, ys, n_points):
     return D(s_domain), total_arc
 
 # x = my + b model weighted t
+# model x as a function of y (because usually in a document, the line will be near vertical.
+# Thus, using x = f(y) is reasonable
 class LinearXModel(object):
     def estimate(self, data):
         self.params = Poly.fit(data[:, 1], data[:, 0], 1, domain=[-1, 1])
@@ -812,8 +814,10 @@ def make_E_align_page(page, AH, O, n_pages, page_index, n_total_lines):
         np.array([line.right_mid() for line in page]),
     ]
 
+    # Perform RANSAC-style linear regression on left mid points and right mid points
     side_inliers = [ransac(coords, LinearXModel, 3, AH / 5.0)[1] for coords in side_points_2d]
     inlier_use = [inliers.mean() > INLIER_THRESHOLD for inliers in side_inliers]
+    assert len(side_inliers) == len(inlier_use) == len(side_points_2d) == 2
 
     if lib.debug:
         debug = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
@@ -839,12 +843,14 @@ def make_E_align_page(page, AH, O, n_pages, page_index, n_total_lines):
 
 def make_E_align(pages, AH, O):
     n_pages = len(pages)
+    # Take underlines into consideration
     n_total_lines = sum((len(page) for page in pages)) + \
         sum((sum((len(line.underlines) for line in page)) for page in pages))
     losses = sum([
         make_E_align_page(page, AH, O, n_pages, i, n_total_lines) \
         for i, page in enumerate(pages)
     ], [])
+    # NullLoss is added here because losses may contain no element (i.e. no E_align_page class is present)
     return sum(losses, NullLoss())
 
 def make_mesh_XYZ(xs, ys, g):
@@ -874,12 +880,17 @@ def debug_print_points(filename, points, step=None, color=BLUE):
 def make_mesh_2d(all_lines, O, R, g, n_points_w=None):
     all_letters = np.concatenate([line.letters for line in all_lines])
     corners_2d = np.concatenate([letter.corners() for letter in all_letters]).T
+    assert corners_2d.shape[0] == 2 and corners_2d.shape[1] == 4 * len(all_letters)
     corners = image_to_focal_plane(corners_2d, O)
+    assert corners.shape[0] == 3
     t0s = np.full((corners.shape[1],), np.inf, dtype=np.float64)
+    # Get the (X,Y,Z) on the GCS surface
     corners_t, corners_XYZ = newton.t_i_k(R, g, corners, t0s)
 
     corners_X, _, corners_Z = corners_XYZ
     relative_Z_error = np.abs(g(corners_X) - corners_Z) / corners_Z
+    # Only leave corners that are not weird
+    # such as: |g(X) - Z| should be close, |Z| should not be extremely large, t < 0 (the GCS should be in front of the camera)
     corners_XYZ = corners_XYZ[:, np.logical_and(relative_Z_error <= 0.02,
                                                 abs(corners_Z) < 1e6,
                                                 corners_t < 0)]
@@ -927,6 +938,7 @@ def make_mesh_2d(all_lines, O, R, g, n_points_w=None):
     return meshes
 
 def make_mesh_2d_indiv(all_lines, corners_XYZ, O, R, g, n_points_w=None):
+    # Bound the text region by min and max over x, y axis and then expand the axis-aligned bounding boxes a little bit
     box_XYZ = Crop.from_points(corners_XYZ[:2]).expand(0.01)
     if lib.debug: print('box_XYZ:', box_XYZ)
 
@@ -937,11 +949,12 @@ def make_mesh_2d_indiv(all_lines, corners_XYZ, O, R, g, n_points_w=None):
         n_points_w = max(n_points_w, 1800)
     mesh_XYZ_x = np.linspace(box_XYZ.x0, box_XYZ.x1, 400)
     mesh_XYZ_z = g(mesh_XYZ_x)
-    # total_arc will be the true page width (computed from integration)
+    # total_arc will be the true page width (computed from integration using finite difference method)
     mesh_XYZ_xz_arc, total_arc = arc_length_points(mesh_XYZ_x, mesh_XYZ_z,
                                                    int(n_points_w))
     # we actually only need x, because z can be easily computed from g (i.e. g(x) = z)
     mesh_XYZ_x_arc, _ = mesh_XYZ_xz_arc
+    assert len(mesh_XYZ_x_arc) == int(n_points_w)
 
     # TODO: think more about estimation of aspect ratio for mesh
     # compute the discrete points for height (show follow the aspect ratio (i.e. box_XYZ.h / total_arc)
@@ -949,7 +962,9 @@ def make_mesh_2d_indiv(all_lines, corners_XYZ, O, R, g, n_points_w=None):
     # n_points_h = n_points_w * 1.7
 
     mesh_XYZ_y = np.linspace(box_XYZ.y0, box_XYZ.y1, n_points_h)
+    # (3, n_points_h, n_points_w)
     mesh_XYZ = make_mesh_XYZ(mesh_XYZ_x_arc, mesh_XYZ_y, g)
+    assert mesh_XYZ.shape[0] == 3
     # mesh_2d[:, i, j] == a coordinate (x, y) on the original image
     mesh_2d = gcs_to_image(mesh_XYZ, O, R)
     if lib.debug: print('mesh:', Crop.from_points(mesh_2d))
@@ -1157,8 +1172,8 @@ class Kim2014(object):
         # print('theta_0 dot ey:', theta_0.dot(np.array([0, 1, 0])))
         # print('theta_0 dot v:', theta_0.dot(vanishing))
         # theta_0 = np.array([0.1, 0, 0], dtype=np.float64)
-        theta_0 = (np.random.rand(3) - 0.5) / 4
-        # theta_0 = np.zeros((3,), dtype=np.float64)
+        # theta_0 = (np.random.rand(3) - 0.5) / 4
+        theta_0 = np.zeros((3,), dtype=np.float64) + 1e-7
 
         # flat surface as initial guess.
         # NB: coeff 0 forced to 0 here. not included in opt.
