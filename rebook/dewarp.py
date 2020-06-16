@@ -526,6 +526,7 @@ class E_str(Loss):
     def jac(self, args, all_ts_surface):
         theta, a_m, _, T, l_m, g = unpack_args(args, self.n_pages)
         R = R_theta(theta)
+        # (3, 3, 3): dR[i] = dR / d theta i
         dR = dR_dtheta(theta, R)
 
         gp = g.deriv()
@@ -533,21 +534,28 @@ class E_str(Loss):
         all_ts = np.concatenate([ts for ts, _ in all_ts_surface])
         all_surface = np.concatenate([surface for _, surface in all_ts_surface],
                                      axis=1)
+        # (the number of points, )
         residuals = E_str.unpacked(all_ts_surface, l_m)
 
+        # (Npoints, 3)
         dtheta = dE_str_dtheta(theta, R, dR, g, gp, self.all_points, all_ts, all_surface)
+        # (Npoints, DEGREE)
         dam = dE_str_dam(R, g, gp, self.all_points, all_ts, all_surface)
         # dtheta[:, 1] = 0
 
         if self.scale_t:
+            # (Npoints, 1) / (Npoints, 1) * (3, Npoints).T = (Npoints, 3)
             dtheta -= residuals[:, newaxis] / all_ts[:, newaxis] * dti_dtheta(theta, R, dR, g, gp, self.all_points, all_ts, all_surface).T
+            # (Npoints, 1) / (Npoints, 1) * (DEGREE, Npoints).T = (Npoints, DEGREE)
             dam -= residuals[:, newaxis] / all_ts[:, newaxis] * dti_dam(R, g, gp, self.all_points, all_ts, all_surface).T
 
+        # result: (Npoints, len(parameters))
+        # where result[i][j] is the partial derivative of residual[i] w.r.t parameters[j]
         result = np.concatenate((
-            dtheta,
-            dam,
+            dtheta, # (Npoints, 3)
+            dam, # (Npoints, DEGREE)
             # Doesn't depend on alignment:
-            np.zeros((all_ts.shape[0], 2 * self.n_pages), dtype=np.float64),
+            np.zeros((all_ts.shape[0], 2 * self.n_pages), dtype=np.float64), # (Npoints, 2*n_pages)
             dE_str_dT(R, g, gp, self.all_points, all_ts, all_surface),
             dE_str_dl_k(self.base_points),
         ), axis=1)
@@ -561,6 +569,9 @@ class E_str(Loss):
         return result
 
 def dR_dthetai(theta, R, i):
+    '''
+        compute dR / d theta i by finite difference method
+    '''
     T = norm(theta)
     inc = T / 8192
     delta = np.zeros(3)
@@ -581,28 +592,43 @@ def dti_dtheta(theta, R, dR, g, gp, all_points, all_ts, all_surface):
 
     # dR: 3derivs x r__; dR[:, 0]: 3derivs x r1_; points: 3comps x Npoints
     # A: 3 x Npoints
+    # A1: (3, Npoints) * (Npoints)
     A1 = dR1.dot(all_points) * all_ts
+    # A2: (3, ) * scalar
     A2 = -dR13 * f
+    # A: (3, Npoints) + (3, 1) = (3, Npoints)
     A = A1 + A2[:, newaxis]
+    # B: (Npoints, )
     B = R1.dot(all_points)
+    # C1: (3, Npoints) * (Npoints, ) = (3, Npoints)
     C1 = dR3.dot(all_points) * all_ts  # 3derivs x Npoints
+    # C2: (3, ) * scalar
     C2 = -dR33 * f
+    # C: (3, Npoints) + (3, 1) = (3, Npoints)
     C = C1 + C2[:, newaxis]
+    # D: (Npoints)
     D = R3.dot(all_points)
+    # slopes: (Npoints, )
     slopes = gp(Xs)
+    # (3, Npoints)
     return -(C - slopes * A) / (D - slopes * B)
 
 def dE_str_dtheta(theta, R, dR, g, gp, all_points, all_ts, all_surface):
     _, R2, _ = R
-    dR2 = dR[:, 1]
-    dR23 = dR[:, 1, 2]
+    dR2 = dR[:, 1] # (3, 3): dR2[i] = d r2 / d theta i = (3,)
+    dR23 = dR[:, 1, 2] # (3, ): d R23[i] = d r23 / d theta i = a scalar
 
+    # (3, len(all_points)): dt[i] == the partial derivative w.r.t theta i
     dt = dti_dtheta(theta, R, dR, g, gp, all_points, all_ts, all_surface)
 
+    # (3, len(all_points)): where term1[i] is the partial derivative w.r.t theta i
     term1 = dR2.dot(all_points) * all_ts
+    # (3, len(all_points)): where term2[i] is the partial derivative w.r.t theta i
     term2 = R2.dot(all_points) * dt
+    # (3, )
     term3 = -dR23 * f
 
+    # (len(all_points), 3) + (len(all_points), 3) - (3, )
     return term1.T + term2.T + term3
 
 def dti_dam(R, g, gp, all_points, all_ts, all_surface):
@@ -610,6 +636,7 @@ def dti_dam(R, g, gp, all_points, all_ts, all_surface):
 
     Xs, _, _ = all_surface
 
+    # (Npoints, ) - (Npoints, ) * (Npoints, )
     denom = R3.dot(all_points) - gp(Xs) * R1.dot(all_points)
     if isinstance(g, SplitPoly):
         powers = np.vstack([(Xs - g.T) ** m * g.left.omega ** (m - 1)
@@ -621,6 +648,10 @@ def dti_dam(R, g, gp, all_points, all_ts, all_surface):
         right_block = np.where(Xs > g.T, ratio, 0)
         return np.concatenate([left_block, right_block])
     else:
+        # Note: a0 is not included in the optimization process! Thus, the range is (1, DEGREE+1)
+        # g(X) = (1/w) * h(wX)
+        # d g(X) / d am = d (1/w) * h(wX)) / d am = (1/w) * (wX)^m = (1/w)^(m-1) * (X)^m
+        # (DEGREE, Npoints)
         powers = np.vstack([Xs ** m * g.omega ** (m - 1)
                             for m in range(1, DEGREE + 1)])
         return powers / denom
@@ -628,11 +659,32 @@ def dti_dam(R, g, gp, all_points, all_ts, all_surface):
 def dE_str_dam(R, g, gp, all_points, all_ts, all_surface):
     R1, R2, R3 = R
 
+    # (DEGREE, Npoints)
     dt = dti_dam(R, g, gp, all_points, all_ts, all_surface)
 
-    return (R2.dot(all_points) * dt).T
+    # R2.dot(all_points) == (Npoints,)
+    # * (DEGREE, Npoints)
+    return (R2.dot(all_points) * dt).T # (Npoints, DEGREE)
 
 def dE_str_dl_k(base_points):
+    '''
+      (Npoints, the number of lk parameters): looks like this
+      (Because d (Y - lk) / d lm = -1 if k == m else 0,
+       the points belong to line k will only have k-th column filled with -1 and else 0)
+
+                 l0 l1 l2 ....
+                 -1  0
+                 -1  0
+    (p in l0)    -1  0
+                 -1  0
+                 -1  0 ...
+                  0 -1
+                  0 -1
+    (p in l1)     0 -1
+                  0 -1
+                  0 -1
+                  ........
+    '''
     blocks = [np.full((l.shape[-1], 1), -1) for l in base_points]
     return block_diag(*blocks)
 
