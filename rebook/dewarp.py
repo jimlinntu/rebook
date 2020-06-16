@@ -85,7 +85,16 @@ def estimate_vanishing(AH, lines):
 
 class PolyModel5(object):
     def estimate(self, data):
-        self.params = Poly.fit(data[:, 0], data[:, 1], 1, domain=[-1, 1])
+        self.params = Poly.fit(data[:, 0], data[:, 1], 5, domain=[-1, 1])
+        return True
+
+    def residuals(self, data):
+        return abs(self.params(data[:, 0]) - data[:, 1])
+
+LINE_POLY_DEG = 1
+class TextLinePolyModel(object):
+    def estimate(self, data):
+        self.params = Poly.fit(data[:, 0], data[:, 1], LINE_POLY_DEG, domain=[-1, 1])
         return True
 
     def residuals(self, data):
@@ -118,7 +127,7 @@ def merge_lines(AH, lines):
             out_lines[-1].merge(line)
             points = np.array([letter.base_point() for letter in out_lines[-1]])
             # find a new polynomial to represent this dicrete line
-            new_model, inliers = ransac(points, PolyModel5, min(3, len(points)-2), AH / 15.0)
+            new_model, inliers = ransac(points, TextLinePolyModel, min(3, len(points)-2), AH / 15.0)
             out_lines[-1].compress(inliers)
             out_lines[-1].model = new_model.params
         else:
@@ -140,11 +149,11 @@ def remove_outliers(im, AH, lines):
 
     result = []
     for l in lines:
-        if len(l) < 2: continue
+        if len(l) < 4: continue
 
         points = np.array([letter.base_point() for letter in l])
         min_samples = points.shape[0]//2+1
-        model, inliers = ransac(data=points, model_class=PolyModel5, min_samples=min(min_samples, len(points)-1), residual_threshold=AH / 10.0)
+        model, inliers = ransac(data=points, model_class=TextLinePolyModel, min_samples=min(min_samples, len(points)-1), residual_threshold=AH / 10.0)
         poly = model.params
         l.model = poly
         # trace_baseline(debug, l, BLUE)
@@ -1051,7 +1060,7 @@ def lsq(func, jac, x_scale):
 
     return result
 
-def kim2014(orig, O=None, split=False, n_points_w=None):
+def kim2014(orig, O=None, split=False, n_points_w=None, n_tries=30):
     lib.debug_imwrite('gray.png', binarize.grayscale(orig))
     im = binarize.binarize(orig, algorithm=lambda im: binarize.sauvola_noisy(im, k=0.1))
     global bw
@@ -1120,7 +1129,7 @@ def kim2014(orig, O=None, split=False, n_points_w=None):
         lib.debug_prefix.append('page0')
         dewarper = Kim2014(orig, im, lines, [lines], O, AH, n_points_w)
         lib.debug_prefix.pop()
-        return dewarper.run_retry()
+        return dewarper.run_retry(n_tries=n_tries)
 
 class Kim2014(object):
     def __init__(self, orig, im, lines, pages, O, AH, n_points_w):
@@ -1153,19 +1162,20 @@ class Kim2014(object):
                 self.base_points.append(image_to_focal_plane(mid_points, O))
 
     def initial_args(self):
-        # Estimate viewpoint from vanishing point
-        vanishing_points = [estimate_vanishing(self.AH, page) \
-                            for page in self.pages]
-        mean_image_vanishing = np.mean(vanishing_points, axis=0)
-        vanishing = np.concatenate([mean_image_vanishing - self.O, [-f]])
-        vx, vy, _ = vanishing
-        if lib.debug: print(' v:', vanishing)
+        if False:
+            # Estimate viewpoint from vanishing point
+            vanishing_points = [estimate_vanishing(self.AH, page) \
+                                for page in self.pages]
+            mean_image_vanishing = np.mean(vanishing_points, axis=0)
+            vanishing = np.concatenate([mean_image_vanishing - self.O, [-f]])
+            vx, vy, _ = vanishing
+            if lib.debug: print(' v:', vanishing)
 
-        xz_ratio = -f / vx  # theta_x / theta_z
-        norm_theta_sq = (atan2(np.sqrt(vx ** 2 + f ** 2), vy) - pi) ** 2
-        theta_z = np.sqrt(norm_theta_sq / (xz_ratio ** 2 + 1))
-        theta_x = xz_ratio * theta_z
-        theta_x
+            xz_ratio = -f / vx  # theta_x / theta_z
+            norm_theta_sq = (atan2(np.sqrt(vx ** 2 + f ** 2), vy) - pi) ** 2
+            theta_z = np.sqrt(norm_theta_sq / (xz_ratio ** 2 + 1))
+            theta_x = xz_ratio * theta_z
+            theta_x
 
         # theta_0 = np.array([theta_x, 0, theta_z])
         # print('theta_0:', theta_0)
@@ -1181,7 +1191,8 @@ class Kim2014(object):
 
         R_0 = R_theta(theta_0)
         _, ROf_y, ROf_z = R_0.dot(Of)
-        if lib.debug: print('Rv:', R_0.dot(np.array((vx, vy, -f))))
+        if False:
+            if lib.debug: print('Rv:', R_0.dot(np.array((vx, vy, -f))))
 
         # Inital guess: R (p * (-1) - Of) (because t == -1 is a good guess)
         all_surface = [R_0.dot(-points - Of[:, newaxis]) for points in self.base_points]
@@ -1339,6 +1350,11 @@ def go(argv):
         # gray *= 255 / np.percentile(gray, 95)
         # norm = binarize.ng2014_normalize(lib.clip_u8(gray))
         cv2.imwrite(str(img_path.parent / (base_name + '_dewarped{}.png'.format(i))), outimg)
+
+def set_global_params(gcs_poly_degree, line_poly_degree):
+    global DEGREE, LINE_POLY_DEG
+    DEGREE = gcs_poly_degree
+    LINE_POLY_DEG = line_poly_degree
 
 if __name__ == '__main__':
     go(sys.argv)
