@@ -650,7 +650,8 @@ def dti_dam(R, g, gp, all_points, all_ts, all_surface):
     else:
         # Note: a0 is not included in the optimization process! Thus, the range is (1, DEGREE+1)
         # g(X) = (1/w) * h(wX)
-        # d g(X) / d am = d (1/w) * h(wX)) / d am = (1/w) * (wX)^m = (1/w)^(m-1) * (X)^m
+        # d g(X) / d am = (1/w) * (wx)^m + g'(X) * d X / d am (by derivative of the product of two functions)
+        #               = w^(m-1) * x ^m + g'(X) * d X / d am
         # (DEGREE, Npoints)
         powers = np.vstack([Xs ** m * g.omega ** (m - 1)
                             for m in range(1, DEGREE + 1)])
