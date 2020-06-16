@@ -15,6 +15,9 @@ Focal length is currently assumed to be that of the iPhone 7, because that’s w
 
 The Kim et al. algorithm seems to actually work (and be fast enough to process large numbers of pages in a reasonable amount of time); you can use it directly or via `batch.py --dewarp`.
 
+[./rebook/app.py](./rebook/app.py) encapsulates dewarp functionalities into tunable class.
+You can run `python app.py <img_path> <out_path> <gcs_poly_deg> <line_poly_deg>` to test.
+
 ## Binarization
 
 `binarize.py` contains a ton of binarization algorithms, which should all have mostly-optimized implementations.
